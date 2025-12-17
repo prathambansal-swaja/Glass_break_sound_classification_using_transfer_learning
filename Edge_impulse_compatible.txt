@@ -1,0 +1,104 @@
+import math, requests, sys
+from pathlib import Path
+import tensorflow as tf
+from tensorflow.keras import ( Model , layers)
+from tensorflow.keras.layers import (
+    Input,
+    Reshape,
+    Conv2D,
+    BatchNormalization,
+    ReLU,
+    MaxPooling2D,
+    GlobalAveragePooling2D,
+    Dense
+)
+from tensorflow.keras.optimizers.legacy import Nadam
+
+sys.path.append('./resources/libraries')
+import ei_tensorflow.training
+
+
+# =========================================================
+# CONFIG
+# =========================================================
+INPUT_FRAMES = 40
+INPUT_BINS   = 40
+INPUT_SHAPE   = INPUT_FRAMES * INPUT_BINS  # 1960
+
+#INPUT_SHAPE = (49, 40, 1)   # must match EI DSP output
+NUM_CLASSES = 2             # binary classification
+EPOCHS = args.epochs or 30
+LEARNING_RATE = args.learning_rate or 0.001
+BATCH_SIZE = args.batch_size or 32
+ENSURE_DETERMINISM = args.ensure_determinism
+
+
+# =========================================================
+# MODEL (NDP120 Core2-safe CNN)
+# =========================================================
+#inputs = Input(shape=INPUT_SHAPE)
+inputs=Input(shape=(INPUT_SHAPE,))
+x = Reshape((INPUT_FRAMES, INPUT_BINS, 1))(inputs)  # <-- CRITICAL FIX
+x = Conv2D(16, (3, 3), padding="same", use_bias=False)(x)
+x = BatchNormalization()(x)
+x = ReLU()(x)
+x = MaxPooling2D((2, 2))(x)
+
+x = Conv2D(32, (3, 3), padding="same", use_bias=False)(x)
+x = BatchNormalization()(x)
+x = ReLU()(x)
+x = MaxPooling2D((2, 2))(x)
+
+x = Conv2D(48, (3, 3), padding="same", use_bias=False)(x)
+x = BatchNormalization()(x)
+x = ReLU()(x)
+
+#x = GlobalAveragePooling2D()(x)
+x = layers.AveragePooling2D(pool_size=(x.shape[1], x.shape[2]))(x)
+
+x = layers.Flatten()(x)
+x = Dense(64, activation="relu", use_bias=False)(x)
+outputs = Dense(2, activation="sigmoid")(x)
+
+model = Model(inputs, outputs)
+model.summary()
+
+
+# =========================================================
+# DATA PIPELINE (Edge Impulse style)
+# =========================================================
+if not ENSURE_DETERMINISM:
+    train_dataset = train_dataset.shuffle(buffer_size=BATCH_SIZE * 4)
+
+prefetch_policy = 1 if ENSURE_DETERMINISM else tf.data.AUTOTUNE
+
+train_dataset = (
+    train_dataset
+    .batch(BATCH_SIZE, drop_remainder=False)
+    .prefetch(prefetch_policy)
+)
+
+validation_dataset = (
+    validation_dataset
+    .batch(BATCH_SIZE, drop_remainder=False)
+    .prefetch(prefetch_policy)
+)
+
+
+# =========================================================
+# TRAINING
+# =========================================================
+model.compile(
+    optimizer=Nadam(learning_rate=LEARNING_RATE),
+    loss="binary_crossentropy",
+    metrics=["accuracy"]
+)
+
+model.fit(
+    train_dataset,
+    validation_data=validation_dataset,
+    epochs=EPOCHS,
+    verbose=2,
+    callbacks=callbacks,
+    class_weight=ei_tensorflow.training.get_class_weights(Y_train)
+)
